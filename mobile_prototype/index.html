@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 手机端视口设置(真机预览时生效; 桌面浏览器里由外层容器模拟手机尺寸) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>分层审核 · 移动端原型</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ============================================================
+       手机屏幕容器: 宽390px居中, 模拟手机屏幕(外层浅灰背景是"桌面")
+       内部结构: 顶部操作区(固定) + 问题列表(可滚动) + 底部tab栏(固定)
+       ============================================================ -->
+  <div class="phone">
+
+    <!-- ============ 顶部: 当前操作人 + 角色标签 + 切换器 ============ -->
+    <header class="topbar">
+      <!-- 第一行: 当前操作人头像/姓名/角色 + 待处理数量徽标 -->
+      <div class="topbar-row">
+        <div class="current-user">
+          <div class="avatar" id="avatar">王</div>
+          <div class="user-info">
+            <div class="user-name" id="userName">王强</div>
+            <div class="user-role" id="userRole">
+              <span class="role-chip" id="roleChip">第一责任人 · 操作工</span>
+            </div>
+          </div>
+        </div>
+        <div class="pending-badge">待处理 <b id="pendingCount">0</b></div>
+      </div>
+      <!-- 第二行: 操作人切换器(王/李/张), 点击切换视角 -->
+      <div class="operator-switch" id="operatorSwitch"></div>
+    </header>
+
+    <!-- ============ 中间: 内容区(待处理列表 / 已处理列表) ============ -->
+    <main class="content" id="content">
+      <!-- 由 app.js 动态渲染 -->
+    </main>
+
+    <!-- ============ 底部: tab栏(待处理 / 已处理) ============ -->
+    <nav class="tabbar">
+      <button class="tab-item active" id="tabPending" onclick="switchTab('pending')">
+        <span class="tab-icon">📋</span>
+        <span class="tab-label">待处理</span>
+        <!-- 待处理数量小红点 -->
+        <span class="tab-badge" id="tabBadge">0</span>
+      </button>
+      <button class="tab-item" id="tabDone" onclick="switchTab('done')">
+        <span class="tab-icon">✅</span>
+        <span class="tab-label">已处理</span>
+      </button>
+    </nav>
+
+    <!-- ============ Toast 轻提示(操作成功后顶部浮现) ============ -->
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <!-- 桌面预览时的说明文字(不在手机容器内) -->
+  <p class="page-caption">LPA 分层审核 · 移动端静态原型（纯前端演示 · 双击即可打开）</p>
+
+  <!-- ============================================================
+       操作确认弹窗(通过/退回/跟踪中共用一个, 内容由JS动态填充)
+       ============================================================ -->
+  <div class="modal-mask" id="modalMask">
+    <div class="modal">
+      <div class="modal-title" id="modalTitle">确认操作</div>
+      <!-- 问题摘要行(让用户确认操作对象, 防止看错条目) -->
+      <div class="modal-issue" id="modalIssue">问题 #1 · 车削1工位</div>
+
+      <!-- 照片上传占位框(仅"通过"时显示; 原型不做真实上传, 点击模拟"已选择") -->
+      <div class="photo-placeholder" id="photoPlaceholder" onclick="togglePhotoMock()">
+        <span class="photo-icon">📷</span>
+        <span id="photoText">请上传整改后现场照片</span>
+        <span class="photo-hint">(原型占位 · 不实际上传)</span>
+      </div>
+
+      <!-- 备注输入框(三种操作共用: 通过=整改说明 / 退回=退回原因 / 跟踪中=跟踪情况) -->
+      <textarea class="modal-input" id="modalInput"
+                rows="3" placeholder="请填写..."></textarea>
+      <!-- 校验错误提示(备注为空时显示) -->
+      <div class="modal-error" id="modalError"></div>
+
+      <div class="modal-btns">
+        <button class="btn-modal-cancel" onclick="closeModal()">取消</button>
+        <button class="btn-modal-ok" id="modalOkBtn" onclick="confirmModal()">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

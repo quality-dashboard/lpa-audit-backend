@@ -1,0 +1,12 @@
+# Streamlit敏感配置(含Turso Token), 严禁提交
+.streamlit/secrets.toml
+
+# Python运行产物
+__pycache__/
+*.pyc
+
+# 虚拟环境
+venv/
+
+# 本地文档(不进仓库)
+*答辩版*.md
