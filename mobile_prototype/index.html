@@ -3,92 +3,150 @@
 <head>
   <meta charset="UTF-8">
   <!-- 手机端视口设置(真机预览时生效; 桌面浏览器里由外层容器模拟手机尺寸) -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>分层审核 · 移动端原型</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>QCS 质量协同 · 移动端</title>
+
+  <!-- ===== PWA: manifest / 图标 / 主题色 ===== -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#1f4e78">
+
+  <!-- ===== PWA: iOS 添加到主屏幕后以独立 App 窗口打开 ===== -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="QCS">
+
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+  <!-- ============ 登录视图(v2.5: 未登录时显示, 登录后隐藏) ============ -->
+  <div id="loginView" style="position:fixed;inset:0;background:#f1f3f5;display:flex;
+       align-items:center;justify-content:center;z-index:2000;">
+    <div style="background:#fff;border-radius:16px;padding:28px 24px;width:340px;
+         box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+      <div style="text-align:center;font-size:20px;font-weight:600;margin-bottom:6px;">🔐 QCS 质量协同</div>
+      <div style="text-align:center;color:#868e96;font-size:12px;margin-bottom:18px;">请登录后使用</div>
+      <input id="loginUsername" type="text" placeholder="账号" style="width:100%;box-sizing:border-box;
+             padding:11px 12px;border:1px solid #dee2e6;border-radius:10px;font-size:14px;margin-bottom:12px;" />
+      <input id="loginPassword" type="password" placeholder="密码" style="width:100%;box-sizing:border-box;
+             padding:11px 12px;border:1px solid #dee2e6;border-radius:10px;font-size:14px;margin-bottom:14px;" />
+      <button id="loginBtn" style="width:100%;padding:12px;background:#3d5a80;color:#fff;border:none;
+              border-radius:10px;font-size:15px;cursor:pointer;">登 录</button>
+      <div id="loginError" style="color:#c92a2a;font-size:12px;margin-top:10px;min-height:16px;"></div>
+    </div>
+  </div>
+
   <!-- ============================================================
        手机屏幕容器: 宽390px居中, 模拟手机屏幕(外层浅灰背景是"桌面")
-       内部结构: 顶部操作区(固定) + 问题列表(可滚动) + 底部tab栏(固定)
+       内部结构: 顶部操作区(固定) + 内容区(可滚动) + 底部tab栏(固定)
        ============================================================ -->
-  <div class="phone">
+  <div class="phone" id="phoneView" style="display:none">
 
-    <!-- ============ 顶部: 当前操作人 + 角色标签 + 切换器 ============ -->
+    <!-- ============ 顶部: 当前登录人 + 部门/角色 + 逾期徽标 ============ -->
     <header class="topbar">
-      <!-- 第一行: 当前操作人头像/姓名/角色 + 待处理数量徽标 -->
       <div class="topbar-row">
         <div class="current-user">
-          <div class="avatar" id="avatar">王</div>
+          <div class="avatar" id="avatar">管</div>
           <div class="user-info">
-            <div class="user-name" id="userName">王强</div>
-            <div class="user-role" id="userRole">
-              <span class="role-chip" id="roleChip">第一责任人 · 操作工</span>
+            <div class="user-name" id="userName">管理员</div>
+            <div class="user-role">
+              <span class="role-chip" id="roleChip">经理</span>
             </div>
           </div>
         </div>
-        <div class="pending-badge">待处理 <b id="pendingCount">0</b></div>
+        <div class="pending-badge">逾期 <b id="overdueBadge">0</b></div>
       </div>
-      <!-- 第二行: 操作人切换器(王/李/张), 点击切换视角 -->
-      <div class="operator-switch" id="operatorSwitch"></div>
+      <!-- 第二行: 登录人信息 + 退出按钮 -->
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div class="operator-switch" id="operatorSwitch" style="flex:1;"></div>
+        <button id="logoutBtn" style="margin-left:8px;padding:5px 12px;border:1px solid #dee2e6;
+                background:#fff;border-radius:8px;font-size:12px;color:#495057;cursor:pointer;">退出</button>
+      </div>
     </header>
 
-    <!-- ============ 中间: 内容区(待处理列表 / 已处理列表) ============ -->
+    <!-- ============ 中间: 内容区(措施/问题/逾期/我的) ============ -->
     <main class="content" id="content">
       <!-- 由 app.js 动态渲染 -->
     </main>
 
-    <!-- ============ 底部: tab栏(待处理 / 已处理) ============ -->
+    <!-- ============ 底部: tab栏(措施 / 问题 / 逾期 / 我的) ============ -->
     <nav class="tabbar">
-      <button class="tab-item active" id="tabPending" onclick="switchTab('pending')">
+      <button class="tab-item active" id="tabMeasures" onclick="switchTab('measures')">
+        <span class="tab-icon">🔧</span>
+        <span class="tab-label">措施</span>
+      </button>
+      <button class="tab-item" id="tabIssues" onclick="switchTab('issues')">
         <span class="tab-icon">📋</span>
-        <span class="tab-label">待处理</span>
-        <!-- 待处理数量小红点 -->
+        <span class="tab-label">问题</span>
+      </button>
+      <button class="tab-item" id="tabOverdue" onclick="switchTab('overdue')">
+        <span class="tab-icon">⚠️</span>
+        <span class="tab-label">逾期</span>
+        <!-- 逾期数量小红点 -->
         <span class="tab-badge" id="tabBadge">0</span>
       </button>
-      <button class="tab-item" id="tabDone" onclick="switchTab('done')">
-        <span class="tab-icon">✅</span>
-        <span class="tab-label">已处理</span>
+      <button class="tab-item" id="tabMine" onclick="switchTab('mine')">
+        <span class="tab-icon">👤</span>
+        <span class="tab-label">我的</span>
       </button>
     </nav>
 
-    <!-- ============ Toast 轻提示(操作成功后顶部浮现) ============ -->
+    <!-- ============ Toast 轻提示 ============ -->
     <div class="toast" id="toast"></div>
   </div>
 
-  <!-- 桌面预览时的说明文字(不在手机容器内) -->
-  <p class="page-caption">LPA 分层审核 · 移动端静态原型（纯前端演示 · 双击即可打开）</p>
+  <!-- 桌面预览时的说明文字 -->
+  <p class="page-caption">QCS 质量协同系统 · 移动端（需先启动后端 api_server）</p>
 
   <!-- ============================================================
-       操作确认弹窗(通过/退回/跟踪中共用一个, 内容由JS动态填充)
+       状态更新弹窗(v3.1: 待执行→执行中→已完成→已关闭)
        ============================================================ -->
-  <div class="modal-mask" id="modalMask">
+  <div class="modal-mask" id="statusMask">
     <div class="modal">
-      <div class="modal-title" id="modalTitle">确认操作</div>
-      <!-- 问题摘要行(让用户确认操作对象, 防止看错条目) -->
-      <div class="modal-issue" id="modalIssue">问题 #1 · 车削1工位</div>
+      <div class="modal-title" id="statusTitle">更新措施状态</div>
+      <!-- 措施摘要行 -->
+      <div class="modal-issue" id="statusIssue">措施 #1</div>
 
-      <!-- 照片上传占位框(仅"通过"时显示; 原型不做真实上传, 点击模拟"已选择") -->
-      <div class="photo-placeholder" id="photoPlaceholder" onclick="togglePhotoMock()">
-        <span class="photo-icon">📷</span>
-        <span id="photoText">请上传整改后现场照片</span>
-        <span class="photo-hint">(原型占位 · 不实际上传)</span>
+      <!-- 目标状态 -->
+      <select class="modal-input" id="statusSelect"></select>
+
+      <!-- 备注(完成说明 / 退回原因) -->
+      <textarea class="modal-input" id="statusComment" rows="3"
+                placeholder="备注(完成说明 / 验证结论 / 退回原因)"></textarea>
+
+      <!-- 完成证据照片(可选, v3.1: 不再是强制整改照片) -->
+      <input type="file" id="photoInput" accept="image/*" capture="environment"
+             style="display:none" />
+      <div class="photo-placeholder" id="photoPlaceholder" onclick="triggerPhotoPick()">
+        <div id="photoHintBox">
+          <span class="photo-icon">📷</span>
+          <span id="photoText">添加完成证据照片(可选)</span>
+        </div>
+        <img id="photoPreview" class="photo-preview" style="display:none" alt="照片预览" />
       </div>
 
-      <!-- 备注输入框(三种操作共用: 通过=整改说明 / 退回=退回原因 / 跟踪中=跟踪情况) -->
-      <textarea class="modal-input" id="modalInput"
-                rows="3" placeholder="请填写..."></textarea>
-      <!-- 校验错误提示(备注为空时显示) -->
-      <div class="modal-error" id="modalError"></div>
-
+      <div class="modal-error" id="statusError"></div>
       <div class="modal-btns">
-        <button class="btn-modal-cancel" onclick="closeModal()">取消</button>
-        <button class="btn-modal-ok" id="modalOkBtn" onclick="confirmModal()">确认</button>
+        <button class="btn-modal-cancel" onclick="closeStatusModal()">取消</button>
+        <button class="btn-modal-ok" id="statusOkBtn" onclick="confirmStatusUpdate()">确认</button>
       </div>
     </div>
   </div>
 
   <script src="app.js"></script>
+
+  <!-- ===== PWA: 注册 Service Worker(需 HTTPS 或 localhost 环境才生效) ===== -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("./service-worker.js").catch(function (e) {
+          console.warn("Service Worker 注册失败(不影响正常使用):", e);
+        });
+      });
+    }
+  </script>
 </body>
 </html>

@@ -7,4 +7,5 @@ openpyxl>=3.1.2
 # --- 移动端原型后端(api_server.py) ---
 fastapi>=0.115.0
 uvicorn>=0.30.0
+pillow>=10.0.0   # v1.1 整改照片后端二次压缩(最长边<=1600px, 转JPEG, 最终<=500KB)
 # 注: 连接Turso用的是urllib HTTP API(与db.py同款), 不需要libsql-client

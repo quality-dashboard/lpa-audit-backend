@@ -3,6 +3,23 @@
    视觉基调: 蓝灰主色 + 白色卡片, 干净简洁适合车间使用
    ============================================================ */
 
+/* ---------- v1.1 整改照片框与预览样式 ---------- */
+/* 照片预览图: 选图后显示在照片框内, 等比裁切铺满框 */
+.photo-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;   /* 铺满框且不变形 */
+  border-radius: 10px;
+  display: block;
+}
+/* 未选图时的提示图标/文字默认竖排居中(沿用 .photo-placeholder 的 flex 布局) */
+#photoHintBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
 /* ---------- CSS变量: 统一管理配色, 方便后续调整主题 ---------- */
 :root {
   --primary: #3d5a80;        /* 蓝灰主色(顶栏/选中态/强调元素) */
@@ -44,7 +61,11 @@ body {
    ============================================================ */
 .phone {
   width: 390px;
-  height: min(800px, 90vh);    /* 高度不超过视口90%, 桌面预览友好 */
+  /* 固定高度: 不用 min()(部分旧浏览器/WebView 不支持会解析失败导致高度坍塌,
+     tabbar 就会随内容被顶到列表中间)。改用 height + max-height 保证三段式
+     flex 布局始终成立: 顶栏(topbar) + 内容(content, 可滚动) + 底栏(tabbar)。 */
+  height: 90vh;
+  max-height: 800px;           /* 桌面预览时不超过800px, 避免过高 */
   background: #f6f7f9;
   border-radius: 24px;
   box-shadow: 0 12px 40px rgba(0,0,0,0.18);
@@ -159,6 +180,39 @@ body {
   margin: 2px 2px 10px;
 }
 
+/* --- 两层标题(待评审 / 已评审) --- */
+.layer-caption {
+  font-size: 13px !important;
+  font-weight: bold;
+  color: var(--primary) !important;
+  margin: 14px 2px 8px !important;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e9ecef;
+}
+
+/* --- 问题分组标题(措施列表内) --- */
+.issue-group {
+  background: var(--card-bg);
+  border-left: 4px solid var(--primary);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+  cursor: pointer;
+}
+.issue-group-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--primary);
+}
+.issue-group-desc {
+  font-size: 13px;
+  color: var(--text-main);
+  line-height: 1.6;
+  margin-top: 4px;
+  white-space: normal;
+  word-break: break-word;
+}
+
 /* --- 问题卡片 --- */
 .issue-card {
   background: var(--card-bg);
@@ -229,6 +283,21 @@ body {
 .btn-reject{ background: var(--reject); color: #fff; }
 /* 跟踪中: 橙色空心(轻量动作) */
 .btn-track { background: #fff0e6; color: var(--track); border: 1px solid var(--track); }
+/* v3.1 QCS: 主按钮(蓝灰实心, 状态推进默认动作) */
+.btn-primary { background: var(--primary); color: #fff; }
+
+/* v3.1 QCS: 措施列表顶部告警条(逾期/即将到期) */
+.alert-bar {
+  background: #fff5f5;
+  border: 1px solid #ffc9c9;
+  color: #c92a2a;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+}
 
 /* 第一责任人的"退回"按钮置灰(整改方没有退回权限, 与正式系统规则一致) */
 .btn-disabled {
@@ -267,7 +336,9 @@ body {
   display: flex;
   background: #fff;
   border-top: 1px solid var(--border);
-  flex-shrink: 0;              /* tab栏固定在底部 */
+  flex-shrink: 0;              /* tab栏固定在底部: 不参与内容滚动 */
+  /* 真机底部安全区(iPhone 手势条等), 避免按钮被系统区域遮挡 */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .tab-item {
@@ -443,3 +514,59 @@ body {
 
 /* 退回弹窗的确认按钮换红色(操作语义对齐颜色) */
 .btn-modal-ok.danger { background: var(--reject); }
+
+/* ============================================================
+   v2.8 转交第二责任人
+   ============================================================ */
+/* 转交按钮: 次要动作, 单独占一行, 不挤占上方三个审核按钮 */
+.assign-l2-wrap {
+  margin-top: 8px;
+}
+.btn-assign-l2 {
+  width: 100%;
+  padding: 9px 0;
+  border-radius: 8px;
+  border: 1px solid var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.btn-assign-l2:active { transform: scale(0.98); }
+
+/* 弹窗内说明文字(讲清"整改结果保留", 避免误以为是退回重做) */
+.assign-tip {
+  font-size: 12px;
+  color: var(--text-sub);
+  background: #f6f7f9;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+/* 选人下拉: 复用 modal-input 边框风格, 但需固定高度与白底 */
+select.modal-input {
+  height: 42px;
+  background: #fff;
+}
+
+/* ============================================================
+   真机适配: 手机宽度下容器全屏, 保证底部导航始终可见
+   ============================================================ */
+@media (max-width: 500px) {
+  body {
+    padding: 0;                      /* 全屏不需要外围留白 */
+  }
+  .page-caption { display: none; }   /* 桌面预览说明文字在真机上隐藏 */
+  .phone {
+    width: 100%;
+    height: 100vh;             /* 回退值: 不支持 dvh 的旧 WebView */
+    height: 100dvh;            /* 动态视口高度: 避开手机地址栏/工具栏遮挡 */
+    max-height: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
