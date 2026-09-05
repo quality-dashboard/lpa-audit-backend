@@ -373,85 +373,12 @@ def get_all_person_names():
     return sorted(names)
 
 
-def get_person_names_by_level(level):
-    """v2.4: 按层级获取该层责任人姓名(从 issues 表对应字段去重排序)。
-    参数 level: 1/2/3 → responsible_person_1/2/3。
-    用于分析看板图6 的"层级→人员"联动下拉框(动态, 不再用 config 固定名单)。"""
-    col = {1: "responsible_person_1", 2: "responsible_person_2", 3: "responsible_person_3"}.get(level)
-    if not col:
-        return []
-    try:
-        issues = load_all_issues()
-    except Exception:
-        return []
-    if col not in issues.columns:
-        return []
-    names = set()
-    for v in issues[col].dropna().tolist():
-        s = str(v).strip()
-        if s:
-            names.add(s)
-    return sorted(names)
-
-
 def _clear_issues_cache():
     """清空问题列表缓存(增删改问题后调用)"""
     try:
         _load_issues_cached.clear()
     except Exception:
         pass
-
-
-def save_issue_with_measures(problem_description, issue_date, work_station,
-                             responsible_person_1, responsible_person_2,
-                             responsible_person_3, measure_contents,
-                             issue_source="监造提出",
-                             part_no="", model="", problem_level="",
-                             defect_quantity=None, reason_analysis="",
-                             supervisor_name=""):
-    """v2.0: 新增问题 + 其下多条措施(一次提交, 数据一致)。
-    参数:
-      problem_description - 问题描述
-      issue_date          - 发现日期(YYYY-MM-DD字符串)
-      work_station        - 工位
-      responsible_person_1/2/3 - 三层责任人姓名(可为空 → 问题进入"待分配")
-      measure_contents    - 措施内容列表(list[str]), 至少一条(由调用方校验)
-      issue_source        - 问题来源(v2.1新增, 默认"监造提出")
-      part_no/model/problem_level/defect_quantity/reason_analysis/supervisor_name
-                          - v2.3 监造问题清单字段(均可空)
-    流程: ① 插入 issues(状态固定'未评审')
-          ② 逐条插入 measures(is_adopted=NULL待评审, status='待评审')
-          ③ 清缓存
-    返回: 新问题的 id。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _execute(
-        "INSERT INTO issues (problem_description, issue_date, work_station, "
-        "issue_source, part_no, model, problem_level, defect_quantity, "
-        "reason_analysis, supervisor_name, "
-        "responsible_person_1, responsible_person_2, responsible_person_3, "
-        "status, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [problem_description, issue_date, work_station, issue_source,
-         part_no, model, problem_level, defect_quantity,
-         reason_analysis, supervisor_name,
-         responsible_person_1, responsible_person_2, responsible_person_3,
-         "未评审", now, now],
-    )
-    # 取新问题id: 用 MAX(id)(单用户写入场景安全; 也可用 last_insert_rowid 但
-    # Turso HTTP API 每个 execute 独立, 拿不到 last_insert_rowid, 故用 MAX)
-    res = _execute("SELECT MAX(id) FROM issues")
-    issue_id = int(res.rows[0][0]) if res.rows and res.rows[0][0] is not None else 0
-
-    # 逐条插入措施(measure_order 从1开始编号)
-    for idx, content in enumerate(measure_contents):
-        _execute(
-            "INSERT INTO measures (issue_id, measure_content, measure_order, "
-            "is_adopted, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            [issue_id, content, idx + 1, None, "待评审", now, now],
-        )
-    _clear_issues_cache()
-    _clear_measures_cache()
-    return issue_id
 
 
 def save_issue_with_measures_pcs(problem_description, issue_date, work_station,
@@ -509,7 +436,7 @@ def adopt_measure_pcs(measure_id, decision, reviewer):
       decision   - "adopt"(采纳) / "reject"(不采纳)
       reviewer   - 评审人姓名(经理)
     规则:
-      采纳   → status: 待评审 → 待执行(部门待分配, department 仍空)
+      采纳   → status: 待评审 → 已采纳(待经理二次分配工程师)
       不采纳 → status: 待评审 → 不采纳(保留记录, 可重新采纳)
     每次评审写一条状态变更日志(review_result='采纳'/'不采纳'), 并汇总问题状态。
     """
@@ -690,21 +617,6 @@ def assign_measure_person_pcs(measure_id, owner, due_date, operator):
             "new_status": auth_core.MEASURE_STATUS_PENDING}
 
 
-def assign_issue_persons(issue_id, responsible_person_1, responsible_person_2,
-                         responsible_person_3):
-    """v2.3: 为"待分配问题"分配三层责任人。
-    分配后问题状态保持'未评审'不变; 责任人填好后进入正常评审流程
-    (第三责任人可评审其措施)。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _execute(
-        "UPDATE issues SET responsible_person_1 = ?, responsible_person_2 = ?, "
-        "responsible_person_3 = ?, updated_at = ? WHERE id = ?",
-        [responsible_person_1, responsible_person_2, responsible_person_3,
-         now, issue_id],
-    )
-    _clear_issues_cache()
-
-
 def delete_issue(issue_id):
     """按编号删除问题(DELETE)。
     v2.0: 连带删除该问题下的所有措施(measures)和审核记录(issue_reviews),
@@ -798,215 +710,6 @@ def get_measures_by_issue(issue_id):
     return df[df["issue_id"] == issue_id]
 
 
-def update_measure_status(measure_id, new_status):
-    """更新 measures 表的 status 字段(同时刷新 updated_at)。
-    v2.0: 更新措施状态后不直接改问题状态 —— 由调用方随后调用
-    recompute_issue_status 汇总(见各业务函数末尾)。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _execute(
-        "UPDATE measures SET status = ?, updated_at = ? WHERE id = ?",
-        [new_status, now, measure_id],
-    )
-    _clear_measures_cache()
-
-
-def set_measure_adoption(measure_id, is_adopted, reviewer):
-    """v2.0: 第三责任人对某条措施做"采纳/不采纳"评审决策。
-    参数:
-      measure_id  - 措施id
-      is_adopted  - 1=采纳 / 0=不采纳
-      reviewer    - 评审人姓名(该措施所属问题的第三责任人)
-    规则:
-      采纳   → is_adopted=1, status='已评审'(进入分层审核, 从第一责任人开始);
-      不采纳 → is_adopted=0, status='待评审'(保留在不采纳列表, 可重新采纳)。
-    两个动作都会在 issue_reviews 插一条 review_level=3 的评审流水
-    (review_result='采纳'/'不采纳', 与分层审核结果区分开)。
-    最后立即重新汇总所属问题状态。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 查该措施所属问题(拿 issue_id 回填流水; 顺便校验存在性)
-    res = _execute("SELECT issue_id FROM measures WHERE id = ?", [measure_id])
-    if not res.rows:
-        raise RuntimeError("措施 #{} 不存在".format(measure_id))
-    issue_id = int(res.rows[0][0])
-
-    if is_adopted:
-        new_status = "已评审"
-        result = "采纳"
-        comment = "【措施评审】采纳, 进入分层审核流程"
-        # v2.5: 采纳时固化"是否跳过第二责任人" —— 查所属问题的第二责任人是否留空。
-        #   留空 → skip_level2=1(第一责任人完全符合后直接跳到第三责任人);
-        #   非空 → skip_level2=0(走 1→2→3 正常三层)。
-        # 固化后不再随 p2 变化, 避免中途补填第二责任人导致流程回退。
-        # (重新采纳时也会刷新该值, 以适配责任人配置的变化)
-        p2_res = _execute(
-            "SELECT responsible_person_2 FROM issues WHERE id = ?", [issue_id])
-        p2_val = ""
-        if p2_res.rows and p2_res.rows[0][0] is not None:
-            p2_val = str(p2_res.rows[0][0]).strip()
-        skip_flag = 1 if p2_val == "" else 0
-    else:
-        new_status = "待评审"
-        result = "不采纳"
-        comment = "【措施评审】不采纳, 暂不整改"
-
-    if is_adopted:
-        _execute(
-            "UPDATE measures SET is_adopted = ?, status = ?, skip_level2 = ?, "
-            "updated_at = ? WHERE id = ?",
-            [1 if is_adopted else 0, new_status, skip_flag, now, measure_id],
-        )
-    else:
-        _execute(
-            "UPDATE measures SET is_adopted = ?, status = ?, updated_at = ? WHERE id = ?",
-            [1 if is_adopted else 0, new_status, now, measure_id],
-        )
-    _execute(
-        "INSERT INTO issue_reviews (issue_id, measure_id, review_level, reviewer, "
-        "review_result, review_comment, reviewed_at, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        [issue_id, measure_id, 3, reviewer, result, comment, now, now],
-    )
-    _clear_measures_cache()
-    _clear_reviews_cache()
-    # 评审决策改变了措施的采纳状态 → 立即重新汇总问题状态
-    recompute_issue_status(issue_id)
-
-
-def assign_measure_level2(measure_id, person2, reviewer):
-    """v2.8: 第三责任人"中途补充第二责任人"(问题级粒度)。
-
-    场景: 措施采纳时第二责任人留空 → skip_level2 固化为 1(跳过第二责任人);
-    措施流转到第三责任人后, 若认为技术性较强、需要工程师介入, 可发起本动作
-    把措施交回第二责任人验收。
-
-    ★ 与"完全不符合"退回的本质区别:
-        完全不符合     → 否定整改结果: status='已退回', 强制退回第一责任人重做
-        转交第二责任人 → 不否定整改结果: status 保持'已评审', 第一责任人的
-                         整改记录与照片完整保留; 仅把 skip_level2 由 1 改为 0,
-                         让层级回退到 2, 交给工程师在现有整改结果上验收
-
-    ★ 对状态机零改动(本设计的核心):
-        层级推导 compute_measure_level 只取 _LEVEL_REVIEW_RESULTS 内的三种结果
-        ("完全符合"/"完全不符合"/"部分符合"); 本动作写入的 review_result
-        ='转交第二责任人' 不在其中, 会被自动忽略, 不参与推导。
-        层级回退完全由 skip_level2 由 1→0 驱动(已有机制):
-            最新记录是 level1 的"完全符合" → "3 if skip_level2 else 2" → 返回 2
-
-    ★ 说明: 当初 skip_level2 在采纳时固化, 正是为了"避免中途补填第二责任人
-        导致流程回退"。本次是业务需求变更 —— 主动且有留痕地放开该约束。
-
-    粒度(本次选"问题级"): 一次转交, 该问题下【所有 skip_level2=1 且未关闭】的
-    措施一并改为 0, 与当前措施一起走完整三层流程。
-
-    参数:
-      measure_id - 触发本动作的措施id
-      person2    - 要补充的第二责任人姓名
-      reviewer   - 操作人姓名(必须是该措施所属问题的第三责任人)
-    返回: 本次受影响的措施数
-    """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    person2 = str(person2 or "").strip()
-    reviewer = str(reviewer or "").strip()
-    if not person2:
-        raise RuntimeError("第二责任人姓名不能为空")
-    if not reviewer:
-        raise RuntimeError("操作人姓名不能为空")
-
-    # 1) 查措施 + 所属问题(校验存在性 / p3身份 / 跳过标记 / 是否已关闭)
-    res = _execute(
-        "SELECT m.issue_id, m.status, m.skip_level2, i.responsible_person_3 "
-        "FROM measures m JOIN issues i ON m.issue_id = i.id WHERE m.id = ?",
-        [measure_id])
-    if not res.rows:
-        raise RuntimeError("措施 #{} 不存在".format(measure_id))
-    issue_id = int(res.rows[0][0])
-    measure_status = str(res.rows[0][1] or "")
-    skip_flag = res.rows[0][2]
-    p3 = str(res.rows[0][3] or "").strip()
-
-    if p3 != reviewer:
-        raise RuntimeError("{} 不是该措施的第三责任人, 无权转交".format(reviewer))
-    if measure_status == "已关闭":
-        raise RuntimeError("措施 #{} 已关闭, 不能再转交".format(measure_id))
-    # 只有"因第二责任人留空而跳过"的措施才需要补; 已在正常三层的不处理
-    if int(skip_flag or 0) != 1:
-        raise RuntimeError("措施 #{} 当前未跳过第二责任人, 无需转交".format(measure_id))
-
-    # 2) 统计本次受影响的措施数(问题级粒度)
-    cnt_res = _execute(
-        "SELECT COUNT(*) FROM measures WHERE issue_id = ? "
-        "AND COALESCE(skip_level2, 0) = 1 AND COALESCE(status, '') <> '已关闭'",
-        [issue_id])
-    affected = int(cnt_res.rows[0][0]) if cnt_res.rows else 0
-
-    # 3) 补上第二责任人(问题级字段)
-    _execute(
-        "UPDATE issues SET responsible_person_2 = ?, updated_at = ? WHERE id = ?",
-        [person2, now, issue_id])
-
-    # 4) 问题级粒度: 该问题下所有"已跳过且未关闭"的措施一并取消跳过
-    _execute(
-        "UPDATE measures SET skip_level2 = 0, updated_at = ? "
-        "WHERE issue_id = ? AND COALESCE(skip_level2, 0) = 1 "
-        "  AND COALESCE(status, '') <> '已关闭'",
-        [now, issue_id])
-
-    # 5) 留痕: review_result='转交第二责任人' —— 不在 _LEVEL_REVIEW_RESULTS 内,
-    #    状态机推导层级时会被自动忽略, 仅用于追溯
-    _execute(
-        "INSERT INTO issue_reviews (issue_id, measure_id, review_level, reviewer, "
-        "review_result, review_comment, reviewed_at, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        [issue_id, measure_id, 3, reviewer, "转交第二责任人",
-         "【转交第二责任人】技术性较强, 转交工程师 {} 介入验收"
-         "(该问题下所有跳过第二责任人的未关闭措施一并改为走三层)".format(person2),
-         now, now])
-
-    _clear_measures_cache()
-    _clear_issues_cache()
-    _clear_reviews_cache()
-    # 措施状态虽未变, 但责任人配置变了 → 安全起见重新汇总一次问题状态
-    recompute_issue_status(issue_id)
-
-    # 6) 企微通知预留位(本次需求: 暂不发送)
-    #    待群机器人 webhook 权限开通后, 取消下方注释即可通知被补的第二责任人。
-    #    try:
-    #        from notify import send_wechat_message
-    #        send_wechat_message(
-    #            "【LPA转交验收】问题 #{} 的措施已转交给 {}, 请及时验收。".format(
-    #                issue_id, person2))
-    #    except Exception:
-    #        pass
-
-    return affected
-
-
-def add_measure_review_record(measure_id, review_level, reviewer,
-                              review_result, review_comment, photo_path=None):
-    """v2.0: 插入一条"分层审核"流水(完全符合/完全不符合/部分符合)。
-    参数:
-      measure_id    - 措施id
-      review_level  - 审核层级(1/2/3)
-      reviewer      - 审核人姓名
-      review_result - 完全符合 / 完全不符合 / 部分符合
-      review_comment- 备注(完全符合=整改说明 / 完全不符合=不合格原因 / 部分符合=具体说明)
-      photo_path    - 照片相对路径(仅"完全符合"时传)
-    本函数只写流水, 措施状态/问题状态由调用方按状态机规则更新。"""
-    res = _execute("SELECT issue_id FROM measures WHERE id = ?", [measure_id])
-    if not res.rows:
-        raise RuntimeError("措施 #{} 不存在".format(measure_id))
-    issue_id = int(res.rows[0][0])
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _execute(
-        "INSERT INTO issue_reviews (issue_id, measure_id, review_level, reviewer, "
-        "review_result, review_comment, photo_path, reviewed_at, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        [issue_id, measure_id, review_level, reviewer, review_result,
-         review_comment, photo_path, now, now],
-    )
-    _clear_reviews_cache()
-
-
 # ============================================================
 # 审核流水(issue_reviews)读写
 # ============================================================
@@ -1035,83 +738,12 @@ def _clear_reviews_cache():
         pass
 
 
-def get_reviews_by_measure(measure_id):
-    """返回指定措施的全部审核流水(DataFrame, 按id升序)。"""
-    df = load_all_reviews()
-    if df.empty or "measure_id" not in df.columns:
-        return df
-    return df[df["measure_id"] == measure_id]
-
-
 # ============================================================
 # 分层审核层级推导 (v2.0 措施级状态机)
 # ============================================================
 
 # 分层审核的三种结果(评审决策"采纳/不采纳"不参与层级推导)
 _LEVEL_REVIEW_RESULTS = ("完全符合", "完全不符合", "部分符合")
-
-
-def compute_measure_level(measure_records, measure_status, skip_level2=False):
-    """按状态机规则推导"措施"当前待处理层级(纯函数, 不连网)。
-
-    规则(v2.0 / v2.5):
-      ① 措施 status='已关闭' → 返回 None(已闭环, 不再显示待办)
-      ② 措施 status='已退回' → 返回 1(被完全不符合打回第一责任人)
-      ③ 其余(已评审) 看分层审核流水(完全符合/完全不符合/部分符合):
-         - 找最近一次"完全不符合"记录 → 只看它之后的流水(重新开始)
-         - 取筛选后最新一条:
-            完全符合 level=1 → 层级2 (轮到第二责任人)
-                             ★ 若 skip_level2=True 则直接跳到层级3(跳过第二责任人)
-            完全符合 level=2 → 层级3 (轮到第三责任人)
-            完全符合 level=3 → None (第三责任人确认, 措施已闭环)
-            完全不符合     → 层级1 (打回第一责任人)
-            部分符合       → 保持该条记录层级(不推进不退回)
-         - 无有效流水 → 层级1 (刚采纳, 等第一责任人整改)
-    参数:
-      measure_records - 该措施的审核流水列表(字典列表, 顺序不限, 内部按id排序)
-      measure_status  - measures 表当前 status
-      skip_level2     - 是否跳过第二责任人(v2.5): 该措施所属问题的第二责任人
-                        留空时为 True, 第一责任人"完全符合"后直接流转到第三责任人。
-                        该值在"采纳"时固化到 measures.skip_level2, 之后不再变化,
-                        避免中途补填第二责任人导致流程回退。
-    返回: 1/2/3(当前待处理层级) 或 None(已关闭/不参与分层审核)
-    """
-    if measure_status == "已关闭":
-        return None
-    if measure_status == "已退回":
-        return 1
-
-    # 只保留"分层审核"结果(排除评审决策的采纳/不采纳)
-    records = [r for r in measure_records
-               if r.get("review_result") in _LEVEL_REVIEW_RESULTS]
-    records.sort(key=lambda r: r.get("id", 0) or 0)
-
-    # 找最近一次"完全不符合"(退回)记录, 只看它之后的流水
-    last_return_id = None
-    for r in records:
-        if r.get("review_result") == "完全不符合":
-            last_return_id = r.get("id", 0) or 0
-    if last_return_id is not None:
-        records = [r for r in records if (r.get("id", 0) or 0) > last_return_id]
-
-    if records:
-        latest = records[-1]
-        result = latest.get("review_result")
-        level = latest.get("review_level")
-        if result == "完全符合":
-            if level == 1:
-                # v2.5: 跳过第二责任人时, 第一责任人完全符合后直接到第三责任人
-                return 3 if skip_level2 else 2
-            if level == 2:
-                return 3
-            return None   # 第三责任人完全符合 → 措施已关闭
-        if result == "完全不符合":
-            return 1
-        # 部分符合: 措施留在当前责任人层(不推进、不退回)
-        return level if level in (1, 2, 3) else 1
-
-    # 无有效流水 → 刚采纳, 等第一责任人
-    return 1
 
 
 # ============================================================
@@ -1152,50 +784,6 @@ def recompute_issue_status(issue_id):
     )
     _clear_issues_cache()
     return new_status
-
-
-# ============================================================
-# 个人行动计划 (v2.0): 措施粒度查询
-# ============================================================
-
-def get_measures_for_person(person_name):
-    """返回"该人作为三层责任人任一角色"所关联问题的全部措施(DataFrame)。
-
-    联表思路: 措施表只存 issue_id, 不存责任人; 责任人存在 issues 表上。
-    这里先查出该人关联的全部问题id, 再过滤这些问题的措施, 返回的措施
-    DataFrame 额外附加问题字段(problem_description/work_station/issue_date/
-    status/responsible_person_1/2/3), 供页面做"问题摘要 + 措施内容"展示与
-    "当前层级匹配角色"过滤(身兼多职也不漏任务)。
-    参数: person_name - 责任人姓名"""
-    issues = load_all_issues()
-    measures = load_all_measures()
-    if issues.empty or measures.empty:
-        return measures.iloc[0:0] if not measures.empty else pd.DataFrame()
-
-    target = str(person_name).strip()
-    # 三个责任人字段"或"匹配, 命中任一即算关联问题
-    mask = None
-    for col in ("responsible_person_1", "responsible_person_2", "responsible_person_3"):
-        if col not in issues.columns:
-            continue
-        col_match = issues[col].fillna("").astype(str).str.strip().eq(target)
-        mask = col_match if mask is None else (mask | col_match)
-    if mask is None:
-        return measures.iloc[0:0]
-    my_issues = issues[mask]
-
-    # 措施关联问题字段(带 issue_ 前缀避免与措施自身字段混淆)
-    # 注意: issue_date / issue_source 只存在于 issues 表, 必须显式带出,
-    # 否则页面"发现日期"显示"未填"、问题来源取不到。
-    merged = measures.merge(
-        my_issues[["id", "序号", "problem_description", "work_station",
-                   "issue_date", "issue_source", "status",
-                   "responsible_person_1", "responsible_person_2",
-                   "responsible_person_3"]],
-        left_on="issue_id", right_on="id", suffixes=("", "_issue"),
-        how="inner",
-    )
-    return merged
 
 
 # ============================================================
@@ -1452,57 +1040,6 @@ def update_measure_status_pcs(measure_id, new_status, operator,
     recompute_issue_status(issue_id)
     return {"issue_id": issue_id, "old_status": old_status,
             "new_status": new_status, "completed_overdue": completed_overdue}
-
-
-def department_filter_sql(role, department):
-    """v3.1 QCS: 按角色+部门生成措施过滤条件(返回 SQL 片段与参数)。
-
-    数据范围规则:
-      admin    → 不参与业务(调用方应直接拒绝, 不查业务数据)
-      manager  → 不限部门(全部 P/Q/T)
-      engineer → 仅 department 等于本人部门的措施
-
-    返回: (sql片段, 参数列表)。sql片段为空串表示不过滤。
-    """
-    if role == auth_core.ROLE_MANAGER:
-        return "", []
-    if role == auth_core.ROLE_ENGINEER:
-        dept = str(department or "").strip()
-        if not dept:
-            # 工程师未配置部门 → 看不到任何数据(安全默认, 不会越权)
-            return " AND 1=0 ", []
-        return " AND COALESCE(m.department, '') = ? ", [dept]
-    # admin 或其他未知角色: 一律不返回业务数据
-    return " AND 1=0 ", []
-
-
-def get_measures_for_user(role, department):
-    """v3.1 QCS: 按角色+部门取可见措施(联表带出问题字段), 返回 DataFrame。
-    admin 返回空表(不参与业务)。"""
-    measures = load_all_measures()
-    if measures.empty:
-        return measures
-    if role == auth_core.ROLE_ADMIN:
-        return measures.iloc[0:0]
-    if role == auth_core.ROLE_ENGINEER:
-        dept = str(department or "").strip()
-        if not dept:
-            return measures.iloc[0:0]
-        if "department" not in measures.columns:
-            return measures.iloc[0:0]
-        measures = measures[
-            measures["department"].fillna("").astype(str).str.strip() == dept]
-
-    issues = load_all_issues()
-    if issues.empty:
-        return measures
-    cols = [c for c in ["id", "序号", "problem_description", "work_station",
-                        "issue_date", "issue_source", "department",
-                        "status"] if c in issues.columns]
-    merged = measures.merge(
-        issues[cols], left_on="issue_id", right_on="id",
-        suffixes=("", "_issue"), how="inner")
-    return merged
 
 
 # ============================================================

@@ -718,10 +718,10 @@ def get_tasks(sess: dict = Depends(_require_token),
                   description="【已废弃】服务端一律以登录人身份为准, 该参数仅保留兼容")):
     """v3.1 QCS 核心接口: 返回【当前登录用户可见】的措施 + 逾期统计。
 
-    数据范围(★服务端强制过滤, 前端无法绕过):
-      admin    → 不参与业务, 返回空
-      manager  → 全部 P/Q/T
-      engineer → 仅本部门(accounts.department)的措施
+    数据范围(★服务端强制过滤, 前端无法绕过, 见 _dept_filter):
+      admin    → 全部措施(用于第一次分配)
+      manager  → 仅第一次分配给本人(assigned_manager)的措施
+      engineer → 仅第二次分配给本人(owner)的措施
 
     ★ 逾期是计算属性, 不入库:
         逾期     = due_date 过期 且 状态不在终态(已完成/已关闭)
@@ -841,124 +841,6 @@ def get_tasks(sess: dict = Depends(_require_token),
         },
     }
 
-    # ↓↓↓ 以下是 v2.x 三层审核遗留代码(return 之后不可达, 待后续清理) ↓↓↓
-    _acc = _auth.get_account(sess.get("username"))
-    name = str((_acc or {}).get("display_name") or sess.get("username") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="无法解析登录人身份, 请重新登录")
-
-    # 1.5) 全系统统一问题序号(v2.2): 按 created_at,id 排序生成 {issue_id: 序号} 映射,
-    #      与 db.py 的 load_all_issues 完全一致, 保证移动端与电脑端同一问题同序号。
-    issue_no_map = {}
-    try:
-        _, no_rows = _execute(
-            "SELECT id FROM issues "
-            "ORDER BY (created_at IS NULL) ASC, created_at ASC, id ASC")
-        issue_no_map = {row[0]: idx + 1 for idx, row in enumerate(no_rows)}
-    except RuntimeError:
-        issue_no_map = {}
-
-    # 列名索引
-    c = {n: i for i, n in enumerate(cols)}
-    p1_idx, p2_idx, p3_idx = c["responsible_person_1"], c["responsible_person_2"], c["responsible_person_3"]
-
-    def _measure_obj(r):
-        """行 → 措施对象(供前端渲染)"""
-        return {
-            "measure_id": r[c["id"]],
-            "issue_id": r[c["issue_id"]],
-            "issue_no": issue_no_map.get(r[c["issue_id"]]),   # 统一问题序号(非数据库id)
-            "measure_content": r[c["measure_content"]] or "",
-            "measure_order": r[c["measure_order"]],
-            "is_adopted": r[c["is_adopted"]],
-            # v2.8 修正: 原 SQL 中 m.status 与 i.status 同名且无别名, 列名索引被
-            # 后者覆盖, 导致 measure_status 实际取到的是【问题状态】。现已给两列
-            # 加别名, 这里取措施自身状态(待评审/已评审/已退回/已关闭)。
-            "measure_status": r[c["measure_status"]] or "",
-            "problem_description": r[c["problem_description"]] or "",
-            "work_station": r[c["work_station"]] or "",
-            "issue_date": r[c["issue_date"]] or "",
-            "issue_status": r[c["issue_status"]] or "",
-            # v2.8: 供前端判断是否显示"转交第二责任人"按钮(仅 skip_level2=1 的措施)
-            "skip_level2": r[c["skip_level2"]],
-        }
-
-    to_review, as_level1, as_level2, as_level3, closed = [], [], [], [], []
-
-    # 2) 拉取这些措施的全部审核流水(一次性, 供层级推导)
-    measure_ids = [r[c["id"]] for r in rows]
-    reviews_by_measure = {}
-    if measure_ids:
-        placeholders = ",".join("?" for _ in measure_ids)
-        try:
-            _, review_rows = _execute(
-                "SELECT id, measure_id, review_level, review_result "
-                "FROM issue_reviews WHERE measure_id IN ({}) ORDER BY id ASC".format(placeholders),
-                measure_ids,
-            )
-        except RuntimeError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        for rid, mid, level, result in review_rows:
-            reviews_by_measure.setdefault(mid, []).append(
-                {"rid": rid, "level": level, "result": result})
-
-    # 3) 逐条措施归类(附带 level/role 字段, 供前端按措施自身层级提交审核)
-    for r in rows:
-        mid = r[c["id"]]
-        is_adopted = r[c["is_adopted"]]
-        measure_status = r[c["status"]] or ""
-        p1 = str(r[p1_idx] or "").strip()
-        p2 = str(r[p2_idx] or "").strip()
-        p3 = str(r[p3_idx] or "").strip()
-        obj = _measure_obj(r)
-        # skip_level2: 采纳时固化在 measures.skip_level2; 若为 NULL(极旧数据)按 p2 兜底
-        skip2_raw = r[c["skip_level2"]] if "skip_level2" in c else None
-        skip2 = (str(p2) == "") if skip2_raw is None else bool(int(skip2_raw))
-
-        # 待评审(采纳决策): 第三责任人视角, 措施 is_adopted=NULL
-        if str(is_adopted) not in ("0", "1") and p3 == name:
-            obj["role"] = 3          # 该人担任第三责任人
-            obj["level"] = None      # 待评审, 无分层层级
-            to_review.append(obj)
-
-        # 已关闭措施 → "已处理"
-        if measure_status == "已关闭":
-            closed.append(obj)
-            continue
-
-        # 已采纳(is_adopted=1) → 分层审核, 推导当前层级并匹配角色
-        if str(is_adopted) == "1":
-            level = _compute_measure_level(reviews_by_measure.get(mid, []), measure_status, skip2)
-            if level == 1 and p1 == name and measure_status in ("已评审", "已退回"):
-                obj["role"] = 1
-                obj["level"] = 1
-                as_level1.append(obj)
-            elif level == 2 and p2 == name:
-                obj["role"] = 2
-                obj["level"] = 2
-                as_level2.append(obj)
-            elif level == 3 and p3 == name:
-                obj["role"] = 3
-                obj["level"] = 3
-                as_level3.append(obj)
-
-    result = {
-        "to_review": to_review,
-        "as_level1": as_level1,
-        "as_level2": as_level2,
-        "as_level3": as_level3,
-        "closed": closed,
-    }
-
-    # v2.7 角色权限: "待我评审(to_review)"是采纳/不采纳决策, 仅经理层有权限。
-    # 其余角色一律置空, 移动端前端就不会渲染该区块;
-    # 后端 measure_decision 另有角色校验兜底。
-    if sess.get("role") != auth_core.ROLE_MANAGER:
-        result["to_review"] = []
-
-    return result
-
-
 # ============================================================
 # POST /api/measure_decision — 措施评审决策(采纳/不采纳) (v2.0)
 # ============================================================
@@ -975,92 +857,6 @@ def submit_measure_decision(req: MeasureDecisionRequest,
                             sess: dict = Depends(_require_token)):
     # v3.1 QCS: 已废弃 —— QCS 无"采纳/不采纳"环节, 保留仅为兼容旧客户端
     return _reject("该接口已随 v3.1 QCS 改造废弃（已无采纳/不采纳环节）")
-    """第三责任人对某条措施做采纳/不采纳决策(v2.0 措施级)。
-
-    采纳(adopt):  is_adopted=1, status='已评审'(进入分层审核, 从第一责任人开始);
-    不采纳(reject): is_adopted=0, status='待评审'(保留在不采纳列表, 可重新采纳);
-    两种决策都在 issue_reviews 插 review_level=3 的评审流水
-    (review_result='采纳'/'不采纳')。决策后立即重新汇总问题状态。"""
-    # v2.7 角色权限: 采纳/不采纳是经理层(第三责任人)的决策动作 —— 仅 manager
-    # 可执行。这是服务端兜底校验, 防止绕过界面(或移动端)直接调接口。
-    if sess.get("role") != auth_core.ROLE_MANAGER:
-        return _reject("当前角色无权执行采纳/不采纳决策(仅经理层可操作)")
-
-    reviewer = (req.reviewer or "").strip()
-    if not reviewer:
-        return _reject("评审人姓名不能为空")
-
-    # v2.6 安全: 评审人必须是登录人本人(防止冒用他人姓名提交决策)
-    _acc = _auth.get_account(sess.get("username"))
-    _self_name = str((_acc or {}).get("display_name") or "").strip()
-    if _self_name and reviewer != _self_name:
-        return _reject("评审人必须是登录人本人, 不能代他人提交决策")
-
-    if req.decision not in ("adopt", "reject"):
-        return _reject("decision必须是 adopt(采纳) 或 reject(不采纳)")
-
-    # 查措施及其所属问题(含第二责任人, 用于采纳时固化 skip_level2)
-    try:
-        _, rows = _execute(
-            "SELECT m.issue_id, i.responsible_person_3, i.responsible_person_2, m.is_adopted "
-            "FROM measures m JOIN issues i ON m.issue_id = i.id WHERE m.id = ?",
-            [req.measure_id],
-        )
-    except RuntimeError as e:
-        return _reject("数据库查询失败: " + str(e))
-    if not rows:
-        return _reject("措施 #{} 不存在".format(req.measure_id))
-    issue_id = rows[0][0]
-    p3 = str(rows[0][1] or "").strip()
-    p2 = str(rows[0][2] or "").strip()
-    is_adopted = rows[0][3]
-
-    if p3 != reviewer:
-        return _reject("{} 不是该措施的第三责任人, 无权评审".format(reviewer))
-    if str(is_adopted) in ("0", "1"):
-        return _reject("措施 #{} 已评审过, 不能重复决策".format(req.measure_id))
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if req.decision == "adopt":
-        new_status = "已评审"
-        result = "采纳"
-        comment = "【措施评审】采纳, 进入分层审核流程"
-    else:
-        new_status = "待评审"
-        result = "不采纳"
-        comment = "【措施评审】不采纳, 暂不整改"
-
-    try:
-        # v2.5: 采纳时固化"是否跳过第二责任人"(p2 留空 → skip_level2=1)
-        if req.decision == "adopt":
-            skip_flag = 1 if p2 == "" else 0
-            _execute(
-                "UPDATE measures SET is_adopted = ?, status = ?, skip_level2 = ?, "
-                "updated_at = ? WHERE id = ?",
-                [1, new_status, skip_flag, now, req.measure_id],
-            )
-        else:
-            _execute(
-                "UPDATE measures SET is_adopted = ?, status = ?, updated_at = ? WHERE id = ?",
-                [0, new_status, now, req.measure_id],
-            )
-        _execute(
-            "INSERT INTO issue_reviews (issue_id, measure_id, review_level, reviewer, "
-            "review_result, review_comment, reviewed_at, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            [issue_id, req.measure_id, 3, reviewer, result, comment, now, now],
-        )
-        _recompute_issue_status(issue_id)
-    except RuntimeError as e:
-        return _reject("数据库写入失败: " + str(e))
-
-    action_word = "采纳" if req.decision == "adopt" else "不采纳"
-    return {"success": True,
-            "message": "措施评审完成: {}, 措施 #{} 已{}".format(
-                action_word, req.measure_id,
-                "进入分层审核流程" if req.decision == "adopt" else "搁置(可重新采纳)")}
-
-
 # ============================================================
 # POST /api/measure_assign_level2 — 转交第二责任人 (v2.8)
 # ============================================================
