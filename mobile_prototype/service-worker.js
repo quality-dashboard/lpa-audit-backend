@@ -7,7 +7,7 @@
  * 更新版本时把 CACHE_VERSION 号 +1, 旧缓存会在 activate 阶段自动清理
  * ============================================================ */
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const CACHE_NAME = "qcs-static-" + CACHE_VERSION;
 
 /* 预缓存的核心静态资源(相对 SW 所在目录, 部署在任意子路径都可用) */

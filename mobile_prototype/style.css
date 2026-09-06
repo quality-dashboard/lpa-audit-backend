@@ -245,15 +245,12 @@ body {
 .status-wait     { background: var(--status-wait); }    /* 未评审-灰 */
 .status-closed   { background: var(--status-done); }    /* 已关闭-绿 */
 
-/* 问题描述(最多两行, 超出省略号, 保持卡片整齐) */
+/* 问题描述(完整显示, 可换行不省略) */
 .issue-desc {
   font-size: 14px;
   line-height: 1.5;
   margin-bottom: 8px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  word-break: break-word;
 }
 
 /* 工位行(带定位图标) */

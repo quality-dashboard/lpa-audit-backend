@@ -45,6 +45,16 @@ from db import (
     auth,  # v2.5 认证服务实例(电脑端)
 )
 
+def _safe_int(v, default=0):
+    """安全转整数: None/NaN/空串/转换失败时返回 default。
+    防止 pandas 的 NaN 是 truthy 导致 int(NaN) 抛 ValueError。"""
+    try:
+        if v is None or pd.isna(v):
+            return default
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
 st.set_page_config(page_title=SYSTEM_NAME, page_icon="📋", layout="wide")
 
 # ---------- 数据库初始化(首次运行自动建表+迁移, 幂等) ----------
@@ -86,7 +96,7 @@ def _render_login():
                 st.session_state["role"] = acc.get("role")
                 st.session_state["department"] = acc.get("department")
                 st.session_state["must_change_password"] = bool(
-                    int(acc.get("must_change_password") or 0))
+                    _safe_int(acc.get("must_change_password")))
                 st.rerun()
             else:
                 st.error(msg)
@@ -564,14 +574,12 @@ def page_register():
         iid = int(row["id"])
         no = row.get("序号", iid)
         desc = str(row.get("problem_description") or "(无描述)")
-        short = desc if len(desc) <= 60 else desc[:60] + "…"
         prog, _c, circle = _issue_progress(all_ms, iid)
-        title = "{} 问题 {} ｜ {} ｜ {} ｜ {} ｜ {} ｜ {}".format(
-            circle, no, short,
+        title = "问题 {} ｜ {} ｜ {} {} ｜ {} ｜ {} ｜ {}".format(
+            no, desc, prog, circle,
             str(row.get("issue_date") or "-"),
             str(row.get("work_station") or "-"),
-            str(row.get("issue_source") or "-"),
-            prog)
+            str(row.get("issue_source") or "-"))
         with st.expander(title, expanded=False):
             # 展开后: 措施箭头链(内容 → 一次分配经理 → 二次分配工程师 [状态])
             _render_measures_chain(all_ms, iid, no, role, show_actions=True)
@@ -649,9 +657,10 @@ def _measure_status_color(m):
 def _issue_progress(all_ms, issue_id):
     """计算问题完成状态 → (文本, 颜色hex, 圆圈emoji)。
 
-    口径: 只统计【已采纳及之后】的措施(MEASURE_ACTIVE_STATUSES)。
-          ★ 待评审(尚未采纳)与不采纳都不参与进度计算 ——
-            若算进去, 有被拒措施的问题永远到不了 100%。
+    口径(2026-09-06 修订·选项A):
+          分母 = 已采纳路径措施 + 待评审措施(不采纳不计入)。
+          已关闭 = 已采纳路径措施全部已关闭 且 无待评审措施。
+          无任何已采纳路径措施 → 未开始(全待评审/全不采纳/无措施)。
     颜色: 有措施逾期未完成→红; 未完成未逾期→橙; 全部关闭→绿(曾逾期加"曾逾期")。
     """
     if all_ms is None or all_ms.empty or "status" not in all_ms.columns:
@@ -663,7 +672,8 @@ def _issue_progress(all_ms, issue_id):
     active = sub[st_series.isin(auth_core.MEASURE_ACTIVE_STATUSES)]
     if active.empty:
         return "未开始", "#868e96", "⚪"
-    total = len(active)
+    pending_n = int((st_series == auth_core.MEASURE_STATUS_REVIEW).sum())
+    total = len(active) + pending_n
     closed = int((active["status"].astype(str) ==
                   auth_core.MEASURE_STATUS_CLOSED).sum())
     overdue_now = False
@@ -671,12 +681,9 @@ def _issue_progress(all_ms, issue_id):
     for _, mm in active.iterrows():
         if is_measure_overdue(mm.get("due_date"), mm.get("status")):
             overdue_now = True
-        try:
-            if int(mm.get("completed_overdue") or 0) == 1:
-                ever_overdue = True
-        except (TypeError, ValueError):
-            pass
-    if closed >= total:
+        if _safe_int(mm.get("completed_overdue")) == 1:
+            ever_overdue = True
+    if closed >= len(active) and pending_n == 0:
         return ("已关闭 · 曾逾期" if ever_overdue else "已关闭"), "#2f9e44", "🟢"
     if overdue_now:
         return "{}/{} · 逾期".format(closed, total), "#e03131", "🔴"
@@ -1190,42 +1197,6 @@ def page_dashboard():
     st.plotly_chart(fig2, use_container_width=True, config=_PLOTLY_CONFIG)
 
     # ============================================================
-    # 图4 · 逾期分析(优先级最高): 柱状图(各部门逾期数) + 明细表(按逾期天数降序)
-    # ============================================================
-    st.markdown("### 图4 · 逾期分析")
-    st.caption("上: 各部门逾期措施数; 下: 全部逾期措施明细, 按逾期天数从大到小。")
-
-    overdue_df = measures[measures["is_overdue"].fillna(False).astype(bool)]
-    if overdue_df.empty:
-        st.info("当前无逾期措施 ✅")
-    else:
-        # 各部门逾期措施数柱状图
-        od_x = [auth_core.DEPARTMENT_LABELS.get(d, d) for d in auth_core.DEPARTMENTS]
-        od_y = [int((overdue_df["department"].fillna("").astype(str) == d).sum())
-                for d in auth_core.DEPARTMENTS]
-        fig4 = go.Figure(data=[go.Bar(
-            x=od_x, y=od_y, marker_color="#e03131",
-            text=od_y, textposition="outside")])
-        fig4.update_layout(margin=dict(t=20, b=20), height=300,
-                           yaxis=dict(title="逾期措施数"))
-        st.plotly_chart(fig4, use_container_width=True, config=_PLOTLY_CONFIG)
-
-        # 明细表: 问题描述/措施内容/部门/责任人/逾期天数/当前状态, 按逾期天数降序
-        detail_rows = []
-        for _, r in overdue_df.iterrows():
-            dep_raw = str(r.get("department") or "").strip()
-            detail_rows.append({
-                "问题描述": str(r.get("problem_description") or "(无描述)"),
-                "措施内容": str(r.get("measure_content") or ""),
-                "所属部门": auth_core.DEPARTMENT_LABELS.get(dep_raw, dep_raw or "未分配"),
-                "责任人": str(r.get("owner") or "未指定"),
-                "逾期天数": int(r.get("overdue_days") or 0),
-                "当前状态": str(r.get("status") or ""),
-            })
-        detail_rows.sort(key=lambda x: -x["逾期天数"])
-        st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
-
-    # ============================================================
     # 图3 · 责任人TOP分析: 按工程师统计 措施数/逾期数/按期完成率
     # ============================================================
     st.markdown("### 图3 · 责任人 TOP 分析")
@@ -1239,7 +1210,7 @@ def page_dashboard():
             o = str(r.get("owner") or "").strip() or "未指定"
             od = bool(r.get("is_overdue"))
             st_ = str(r.get("status") or "")
-            cov = int(r.get("completed_overdue") or 0)
+            cov = _safe_int(r.get("completed_overdue"))
             d = owner_agg.setdefault(o, {"total": 0, "overdue": 0, "done": 0, "ontime": 0})
             d["total"] += 1
             if od:
@@ -1276,6 +1247,42 @@ def page_dashboard():
                                legend=dict(orientation="h", yanchor="bottom", y=1.0))
             st.plotly_chart(fig3, use_container_width=True, config=_PLOTLY_CONFIG)
             st.dataframe(pd.DataFrame(top), use_container_width=True, hide_index=True)
+
+    # ============================================================
+    # 图4 · 逾期分析(优先级最高): 柱状图(各部门逾期数) + 明细表(按逾期天数降序)
+    # ============================================================
+    st.markdown("### 图4 · 逾期分析")
+    st.caption("上: 各部门逾期措施数; 下: 全部逾期措施明细, 按逾期天数从大到小。")
+
+    overdue_df = measures[measures["is_overdue"].fillna(False).astype(bool)]
+    if overdue_df.empty:
+        st.info("当前无逾期措施 ✅")
+    else:
+        # 各部门逾期措施数柱状图
+        od_x = [auth_core.DEPARTMENT_LABELS.get(d, d) for d in auth_core.DEPARTMENTS]
+        od_y = [int((overdue_df["department"].fillna("").astype(str) == d).sum())
+                for d in auth_core.DEPARTMENTS]
+        fig4 = go.Figure(data=[go.Bar(
+            x=od_x, y=od_y, marker_color="#e03131",
+            text=od_y, textposition="outside")])
+        fig4.update_layout(margin=dict(t=20, b=20), height=300,
+                           yaxis=dict(title="逾期措施数"))
+        st.plotly_chart(fig4, use_container_width=True, config=_PLOTLY_CONFIG)
+
+        # 明细表: 问题描述/措施内容/部门/责任人/逾期天数/当前状态, 按逾期天数降序
+        detail_rows = []
+        for _, r in overdue_df.iterrows():
+            dep_raw = str(r.get("department") or "").strip()
+            detail_rows.append({
+                "问题描述": str(r.get("problem_description") or "(无描述)"),
+                "措施内容": str(r.get("measure_content") or ""),
+                "所属部门": auth_core.DEPARTMENT_LABELS.get(dep_raw, dep_raw or "未分配"),
+                "责任人": str(r.get("owner") or "未指定"),
+                "逾期天数": _safe_int(r.get("overdue_days")),
+                "当前状态": str(r.get("status") or ""),
+            })
+        detail_rows.sort(key=lambda x: -x["逾期天数"])
+        st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
     # ============================================================
     # 图5 · 问题关闭趋势: 每月新增/关闭 + 累计关闭率 + 整体按期关闭率
@@ -1356,7 +1363,7 @@ def page_dashboard():
     # 图7 · 问题等级分布: A/B/C 数量, 结合逾期
     # ============================================================
     st.markdown("### 图7 · 问题等级分布")
-    st.caption("按问题等级(A/B/C)统计问题数; 红柱=该等级下有逾期措施的问题数。")
+    st.caption("按问题等级首字母归档(A/B/C)，“A类项点”等规范格式计入对应等级；空值或非A/B/C开头(如“1”)归入未分类，具体原因见图下说明；红柱=该等级下有逾期措施的问题数。")
 
     if issues.empty or "problem_level" not in issues.columns:
         st.info("暂无问题等级数据")
@@ -1375,6 +1382,9 @@ def page_dashboard():
                 .astype(str).tolist())
 
         lvl_order = ["A", "B", "C", "未分类"]
+        # 未分类原因: 空值或非A/B/C开头的不规范值(如"1"), 仅统计层归并, 不改库
+        raw7 = issues["problem_level"].fillna("").astype(str).str.strip()
+        bad7 = raw7[~raw7.str.startswith(("A", "B", "C"))]
         total_cnt, od_cnt = [], []
         for L in lvl_order:
             sub = issues[issues["problem_level"].fillna("").apply(_lvl) == L]
@@ -1387,12 +1397,17 @@ def page_dashboard():
         fig7.update_layout(barmode="group", height=320, margin=dict(t=20, b=20),
                            legend=dict(orientation="h", yanchor="bottom", y=1.0))
         st.plotly_chart(fig7, use_container_width=True, config=_PLOTLY_CONFIG)
+        if len(bad7):
+            parts7 = ["“{}”×{}条".format(v if v else "(空)", int(c))
+                      for v, c in bad7.value_counts().items()]
+            st.caption("ℹ️ 未分类共{}条，取值: {} —— 主因是录入时未填等级(录入表单为自由文本、非必填)，历史数据不做修改，仅统计层归并。".format(
+                len(bad7), "、".join(parts7)))
 
     # ============================================================
     # 图8 · 措施平均处理周期: 已采纳→已关闭 平均天数, 按部门
     # ============================================================
     st.markdown("### 图8 · 措施平均处理周期(按部门)")
-    st.caption("口径: 处理周期 = 关闭时间 - 采纳时间(天数), 仅统计已采纳且已关闭的措施。")
+    st.caption("口径: 处理周期 = 关闭时间 - 采纳时间(天数), 仅统计已采纳且已关闭的措施; 无已关闭措施的部门显示0天/0条。")
 
     cycle = load_dashboard_cycle()
     if not cycle:
@@ -1403,8 +1418,8 @@ def page_dashboard():
             keys.append("")
         cyc_labels = [auth_core.DEPARTMENT_LABELS.get(k, k) if k else "未分配"
                       for k in keys]
-        cyc_vals = [cycle[k]["avg_days"] for k in keys]
-        cyc_cnts = [cycle[k]["cnt"] for k in keys]
+        cyc_vals = [cycle.get(k, {}).get("avg_days", 0) for k in keys]
+        cyc_cnts = [cycle.get(k, {}).get("cnt", 0) for k in keys]
         fig8 = go.Figure(data=[go.Bar(
             x=cyc_labels, y=cyc_vals, marker_color="#1f77b4",
             text=["{}天 / {}条".format(v, c) for v, c in zip(cyc_vals, cyc_cnts)],

@@ -753,13 +753,14 @@ _LEVEL_REVIEW_RESULTS = ("完全符合", "完全不符合", "部分符合")
 def recompute_issue_status(issue_id):
     """v3.1 QCS: 按该问题下措施的状态实时汇总, 更新 issues.status。
 
-    汇总规则:
+    汇总规则(2026-09-06 口径修订·选项A):
       ① 无措施 或 无"已采纳进入执行流程"的措施 → 未开始
-      ② 所有已采纳措施 status='已关闭'        → 已关闭
+      ② 已采纳路径措施全部'已关闭' 且 无待评审措施 → 已关闭
       ③ 其余                                   → 进行中
 
-    ★ "待评审"/"不采纳"的措施不参与关闭判断 —— 否则一条不采纳的措施
-      会让问题永远无法关闭。
+    ★ "不采纳"的措施不参与判断 —— 否则一条不采纳的措施会让问题永远无法关闭。
+    ★ 待评审措施不进已采纳路径, 但只要还存在, 问题就不算关闭
+      (还有措施没人处理完, 误显示"已关闭"会误导管理层)。
 
     ★ 注意: 汇总基于该问题的【全部】措施(含其他部门)。因此某部门工程师
       可能出现"我部门的措施都关了, 但问题仍显示进行中" —— 这是正确的
@@ -768,11 +769,13 @@ def recompute_issue_status(issue_id):
     if measures.empty:
         new_status = auth_core.ISSUE_STATUS_NOT_STARTED
     else:
-        active = measures[
-            measures["status"].astype(str).isin(auth_core.MEASURE_ACTIVE_STATUSES)]
+        st_all = measures["status"].astype(str)
+        active = measures[st_all.isin(auth_core.MEASURE_ACTIVE_STATUSES)]
+        pending_n = int((st_all == auth_core.MEASURE_STATUS_REVIEW).sum())
         if active.empty:
             new_status = auth_core.ISSUE_STATUS_NOT_STARTED
-        elif (active["status"].astype(str) == auth_core.MEASURE_STATUS_CLOSED).all():
+        elif ((active["status"].astype(str) == auth_core.MEASURE_STATUS_CLOSED).all()
+                and pending_n == 0):
             new_status = auth_core.ISSUE_STATUS_CLOSED
         else:
             new_status = auth_core.ISSUE_STATUS_DOING

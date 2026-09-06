@@ -633,7 +633,7 @@ function openAssignDeptModal(m) {
   box.innerHTML =
     '<div style="font-size:17px;font-weight:bold;margin-bottom:6px;">🏷️ 分配给部门经理（第一次）</div>' +
     '<div class="modal-issue">措施 ' + subNoOf(m) + ' · ' +
-    escapeHtml((m.measure_content || "").slice(0, 20)) + '…</div>' +
+    escapeHtml(m.measure_content || "") + '</div>' +
     field +
     '<div id="assignErr" class="modal-error"></div>' +
     '<div class="modal-btns">' +
@@ -693,7 +693,7 @@ function openAssignPersonModal(m) {
   box.innerHTML =
     '<div style="font-size:17px;font-weight:bold;margin-bottom:6px;">👤 分配工程师（第二次）</div>' +
     '<div class="modal-issue">措施 ' + subNoOf(m) + ' · ' +
-    escapeHtml((m.measure_content || "").slice(0, 20)) + '…</div>' +
+    escapeHtml(m.measure_content || "") + '</div>' +
     '<label style="font-size:12px;color:#495057;">工程师姓名（本部门，可搜索/输入）</label>' +
     '<div id="assignOwnerWrap" style="position:relative;margin-bottom:4px;"></div>' +
     '<div id="assignHint" style="font-size:11px;color:#868e96;margin-bottom:8px;min-height:14px;"></div>' +
@@ -1006,7 +1006,7 @@ function openStatusModal(m, preset) {
   statusTitleEl.textContent = "更新措施状态";
   statusIssueEl.textContent =
     subNoOf(m) + " · " + (m.work_station || "未填工位") +
-    " · " + (m.measure_content || "").slice(0, 18) + "…";
+    " · " + (m.measure_content || "");
 
   // 目标状态: 由调用方 preset 指定(单个)。采纳/分配走独立弹窗。
   const nexts = preset ? [preset] : [];

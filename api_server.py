@@ -394,15 +394,19 @@ def _dept_filter(role, department, alias="m", person_name=""):
 
 def _recompute_issue_status(issue_id: int) -> str:
     """v3.1 QCS: 按该问题下措施的状态实时汇总, 写回 issues.status。
-    规则: 无措施/无已采纳措施→未开始; 所有已采纳措施已关闭→已关闭; 其余→进行中。
-    (待评审/不采纳 不参与关闭判断, 否则问题永远关不掉)"""
+    规则(2026-09-06 口径修订·选项A): 无措施/无已采纳措施→未开始;
+    已采纳路径措施全部已关闭 且 无待评审措施→已关闭; 其余→进行中。
+    (不采纳不参与; 待评审只要还存在就不算关闭, 与 db.recompute_issue_status 同步)"""
     _, measures = _execute(
         "SELECT status FROM measures WHERE issue_id = ?", [issue_id])
     active = [m for m in measures
               if (m[0] or "") in auth_core.MEASURE_ACTIVE_STATUSES]
+    pending_n = sum(1 for m in measures
+                    if (m[0] or "") == auth_core.MEASURE_STATUS_REVIEW)
     if not active:
         new_status = auth_core.ISSUE_STATUS_NOT_STARTED
-    elif all((m[0] or "") == auth_core.MEASURE_STATUS_CLOSED for m in active):
+    elif (all((m[0] or "") == auth_core.MEASURE_STATUS_CLOSED for m in active)
+            and pending_n == 0):
         new_status = auth_core.ISSUE_STATUS_CLOSED
     else:
         new_status = auth_core.ISSUE_STATUS_DOING
